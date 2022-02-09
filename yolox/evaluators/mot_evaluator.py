@@ -590,7 +590,7 @@ class MOTEvaluator:
             out_logger(
                 f'The mean L2 distance: {dict(zip(suc_attacked_ids, [sum(l2_distance_sg[k]) / max(1e-8, len(l2_distance_sg[k])) for k in suc_attacked_ids])) if len(suc_attacked_ids) else None}')
             file.close()
-        elif if last_vdo and self.args.attack == 'multiple':
+        elif last_vdo and self.args.attack == 'multiple':
             output_file = os.path.join(self.args.output_dir, f'{last_vdo}_attack_result.txt')
             file = open(output_file, 'w')
             out_logger = Logger(file)

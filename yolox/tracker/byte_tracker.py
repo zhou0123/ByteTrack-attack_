@@ -432,6 +432,9 @@ class BYTETracker(object):
 
             i+=1
             loss=0
+            loss_att = 0
+            loss_ori = 0
+            loss_wh = 0
             for attack_ind,target_ind in zip(attack_inds,target_inds):
 
                 attack_outputs_ind = hm_index[attack_ind].clone()
@@ -539,9 +542,7 @@ class BYTETracker(object):
                             ori_index_re_ = ori_index_re
                     if len(att_index_new):
                         att_index = att_index_new
-                loss_att = 0
-                loss_ori = 0
-                loss_wh = 0
+                
                 if len(att_index):
                     n_att_index_lst = []
                     n_ori_index_lst = []
@@ -574,48 +575,48 @@ class BYTETracker(object):
                     loss_wh += -smoothL1(outputs_wh, reg_wh[n_ori_index_lst])
 
                 loss += loss_att + loss_ori + loss_wh * 0.1
-                if isinstance(loss, float):
-                    suc = False
-                    break
-                loss.backward()
-                grad = imgs.grad
-                grad /= (grad ** 2).sum().sqrt() + 1e-8
+            if isinstance(loss, float):
+                suc = False
+                break
+            loss.backward()
+            grad = imgs.grad
+            grad /= (grad ** 2).sum().sqrt() + 1e-8
 
-                noise += grad
+            noise += grad
 
-                imgs = (imgs_ori + noise)
-                imgs[0, 0] = torch.clip(imgs[0, 0], min=-0.485 / 0.229, max=(1 - 0.485) / 0.229)
-                imgs[0, 1] = torch.clip(imgs[0, 1], min=-0.456 / 0.224, max=(1 - 0.456) / 0.224)
-                imgs[0, 2] = torch.clip(imgs[0, 2], min=-0.406 / 0.225, max=(1 - 0.406) / 0.225)
-                imgs = imgs.data
+            imgs = (imgs_ori + noise)
+            imgs[0, 0] = torch.clip(imgs[0, 0], min=-0.485 / 0.229, max=(1 - 0.485) / 0.229)
+            imgs[0, 1] = torch.clip(imgs[0, 1], min=-0.456 / 0.224, max=(1 - 0.456) / 0.224)
+            imgs[0, 2] = torch.clip(imgs[0, 2], min=-0.406 / 0.225, max=(1 - 0.406) / 0.225)
+            imgs = imgs.data
 
-                outputs, fail_ids = self.forwardFeatureMt(
-                    im_blob,
-                    img0,
-                    dets,
-                    inds,
-                    remain_inds,
-                    attack_ids,
-                    attack_inds,
-                    target_ids,
-                    target_inds,
-                    last_info
-                )
-                if fail_ids is not None:
+            outputs, fail_ids = self.forwardFeatureMt(
+                im_blob,
+                img0,
+                dets,
+                inds,
+                remain_inds,
+                attack_ids,
+                attack_inds,
+                target_ids,
+                target_inds,
+                last_info
+            )
+            if fail_ids is not None:
                 if fail_ids == 0:
                     break
                 elif fail_ids <= best_fail:
                     best_fail = fail_ids
                     best_i = i
                     best_noise = noise.clone()
-                if i > 60:
-                    if self.opt.no_f_noise:
-                        return None, i, False
-                    else:
-                        if best_i is not None:
-                            noise = best_noise
-                            i = best_i
-                        return noise, i, False
+            if i > 60:
+                if self.opt.no_f_noise:
+                    return None, i, False
+                else:
+                    if best_i is not None:
+                        noise = best_noise
+                        i = best_i
+                    return noise, i, False
         return noise, i, True
 
         
@@ -942,7 +943,6 @@ class BYTETracker(object):
             dets_second=dets_second_
         fail_ids = 0
         if not match:
-
             return outputs,None
         ae_attack_inds = []
         ae_attack_ids = []
@@ -1553,7 +1553,7 @@ class BYTETracker(object):
         self.removed_stracks_.extend(removed_stracks)
         self.tracked_stracks_, self.lost_stracks_ = remove_duplicate_stracks(self.tracked_stracks_, self.lost_stracks_)
         # get scores of lost tracks
-        dets = np.concatenate([dets, dets_second])
+        dets_ = np.concatenate([dets, dets_second])
         output_stracks_ori = [track for track in self.tracked_stracks_ if track.is_activated]
         id_set = set([track.track_id for track in output_stracks_ori])
         for i in range(len(dets_ids)):
@@ -1573,14 +1573,14 @@ class BYTETracker(object):
         target_ids = []
         attack_inds = []
         target_inds = []
-        if len(dets) > 0:
-            ious = bbox_ious(np.ascontiguousarray(dets[:, :4], dtype=np.float64),
-                             np.ascontiguousarray(dets[:, :4], dtype=np.float64))
-            ious[range(len(dets)), range(len(dets))] = 0
+        if len(dets_) > 0:
+            ious = bbox_ious(np.ascontiguousarray(dets_[:, :4], dtype=np.float64),
+                             np.ascontiguousarray(dets_[:, :4], dtype=np.float64))
+            ious[range(len(dets_)), range(len(dets_))] = 0
             ious_inds = np.argmax(ious, axis=1)
-            dis = bbox_dis(np.ascontiguousarray(dets[:, :4], dtype=np.float64),
-                           np.ascontiguousarray(dets[:, :4], dtype=np.float64))
-            dis[range(len(dets)), range(len(dets))] = np.inf
+            dis = bbox_dis(np.ascontiguousarray(dets_[:, :4], dtype=np.float64),
+                           np.ascontiguousarray(dets_[:, :4], dtype=np.float64))
+            dis[range(len(dets_)), range(len(dets_))] = np.inf
             dis_inds = np.argmin(dis, axis=1)
             for attack_ind, track_id in enumerate(dets_ids):
                 if track_id is None or self.multiple_ori_ids[track_id] <= self.FRAME_THR \
@@ -1608,7 +1608,7 @@ class BYTETracker(object):
                         target_ids.append(dets_ids[dis_inds[attack_ind]])
                         attack_inds.append(attack_ind)
                         target_inds.append(dis_inds[attack_ind])
-            fit_index = self.CheckFitself.CheckFit(dets, scores_keep, dets_second, scores_second, [attack_id], [attack_ind])
+            fit_index = self.CheckFit(dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds)
             if fit_index:
                 attack_ids = np.array(attack_ids)[fit_index]
                 target_ids = np.array(target_ids)[fit_index]
@@ -1630,9 +1630,6 @@ class BYTETracker(object):
                         target_ids,
                         target_inds
                     )
-                    
-                        
-                    
                 else:
                     noise, attack_iter, suc = self.attack_mt(
                         imgs,
