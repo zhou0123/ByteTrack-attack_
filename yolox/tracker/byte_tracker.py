@@ -610,7 +610,7 @@ class BYTETracker(object):
                     best_i = i
                     best_noise = noise.clone()
             if i > 60:
-                if self.opt.no_f_noise:
+                if self.args.no_f_noise:
                     return None, i, False
                 else:
                     if best_i is not None:
@@ -1165,7 +1165,7 @@ class BYTETracker(object):
 
     def CheckFit(self, dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds):
         ad_attack_ids_ = [self.multiple_ori2att[attack_id] for attack_id in attack_ids] \
-            if self.opt.attack == 'multiple' else attack_ids
+            if self.args.attack == 'multiple' else [attack_ids]
         attack_dets = np.concatenate([dets, dets_second])[attack_inds][:4]
         ad_attack_dets = []
         ad_attack_ids = []
@@ -1240,7 +1240,7 @@ class BYTETracker(object):
         #     if ious[i, ind] > 0.8:
         #         attack_index.append(i)
         for i in range(len(row_ind)):
-            if self.opt.attack == 'multiple':
+            if self.args.attack == 'multiple':
                 if ious[row_ind[i], col_ind[i]] > 0.9 and self.multiple_ori2att[attack_ids[row_ind[i]]] == ad_attack_ids[col_ind[i]]:
                     attack_index.append(row_ind[i])
             else:
@@ -1534,7 +1534,7 @@ class BYTETracker(object):
             track = detections[inew]
             if track.score < self.det_thresh:
                 continue
-            track.activate_(self.kalman_filter, self.frame_id_, track_id=self_track_id_ori)
+            track.activate_(self.kalman_filter, self.frame_id_)
             activated_starcks.append(track)
         """ Step 5: Update state"""
         for track in self.lost_stracks_:
@@ -1608,82 +1608,71 @@ class BYTETracker(object):
                         target_ids.append(dets_ids[dis_inds[attack_ind]])
                         attack_inds.append(attack_ind)
                         target_inds.append(dis_inds[attack_ind])
-            fit_index = self.CheckFit(dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds)
-            if fit_index:
-                attack_ids = np.array(attack_ids)[fit_index]
-                target_ids = np.array(target_ids)[fit_index]
-                attack_inds = np.array(attack_inds)[fit_index]
-                target_inds = np.array(target_inds)[fit_index]     
+                fit_index = self.CheckFit(dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds)
+                if fit_index:
+                    attack_ids = np.array(attack_ids)[fit_index]
+                    target_ids = np.array(target_ids)[fit_index]
+                    attack_inds = np.array(attack_inds)[fit_index]
+                    target_inds = np.array(target_inds)[fit_index]     
 
-                if self.opt.rand:
-                    noise, attack_iter, suc = self.attack_mt_random(
-                        imgs,
-                        img_info,
-                        dets,
-                        dets_second,
-                        outputs_index_1,
-                        outputs_index_2,
-                        last_info,
-                        outputs_ori,
-                        attack_ids,
-                        attack_inds,
-                        target_ids,
-                        target_inds
-                    )
-                else:
-                    noise, attack_iter, suc = self.attack_mt(
-                        imgs,
-                        img_info,
-                        dets,
-                        dets_second,
-                        outputs_index_1,
-                        outputs_index_2,
-                        last_info,
-                        outputs_ori,
-                        attack_ids,
-                        attack_inds,
-                        target_ids,
-                        target_inds
-                    )
-                self.low_iou_ids.update(set(attack_ids))
-                if suc:
-                    self.attacked_ids.update(set(attack_ids))
-                    print(
-                        f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: SUCCESS\tl2 distance: {(noise ** 2).sum().sqrt().item()}\titeration: {attack_iter}')
-                else:
-                    print(f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: FAIL\tl2 distance: {(noise ** 2).sum().sqrt().item() if noise is not None else None}\titeration: {attack_iter}')
-                adImg = cv2.imread(os.path.join(self.args.img_dir, img_info[-1][0]))
-                if noise is not None:
-                    l2_dis = (noise ** 2).sum().sqrt().item()
+                    if self.args.rand:
+                        noise, attack_iter, suc = self.attack_mt_random(
+                            imgs,
+                            img_info,
+                            dets,
+                            dets_second,
+                            outputs_index_1,
+                            outputs_index_2,
+                            last_info,
+                            outputs_ori,
+                            attack_ids,
+                            attack_inds,
+                            target_ids,
+                            target_inds
+                        )
+                    else:
+                        noise, attack_iter, suc = self.attack_mt(
+                            imgs,
+                            img_info,
+                            dets,
+                            dets_second,
+                            outputs_index_1,
+                            outputs_index_2,
+                            last_info=self.ad_last_info,
+                            outputs_ori=outputs,
+                            attack_ids=attack_ids,
+                            attack_inds=attack_inds,
+                            target_ids=target_ids,
+                            target_inds=target_inds
+                        )
+                    self.low_iou_ids.update(set(attack_ids))
+                    if suc:
+                        self.attacked_ids.update(set(attack_ids))
+                        print(
+                            f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: SUCCESS\tl2 distance: {(noise ** 2).sum().sqrt().item()}\titeration: {attack_iter}')
+                    else:
+                        print(f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: FAIL\tl2 distance: {(noise ** 2).sum().sqrt().item() if noise is not None else None}\titeration: {attack_iter}')
+                    adImg = cv2.imread(os.path.join(self.args.img_dir, img_info[-1][0]))
+        if noise is not None:
+            l2_dis = (noise ** 2).sum().sqrt().item()
 
-                    imgs = (imgs + noise)
-                    imgs[0, 0] = torch.clip(imgs[0, 0], min=-0.485 / 0.229, max=(1 - 0.485) / 0.229)
-                    imgs[0, 1] = torch.clip(imgs[0, 1], min=-0.456 / 0.224, max=(1 - 0.456) / 0.224)
-                    imgs[0, 2] = torch.clip(imgs[0, 2], min=-0.406 / 0.225, max=(1 - 0.406) / 0.225)
-                    imgs = imgs.data
+            imgs = (imgs + noise)
+            imgs[0, 0] = torch.clip(imgs[0, 0], min=-0.485 / 0.229, max=(1 - 0.485) / 0.229)
+            imgs[0, 1] = torch.clip(imgs[0, 1], min=-0.456 / 0.224, max=(1 - 0.456) / 0.224)
+            imgs[0, 2] = torch.clip(imgs[0, 2], min=-0.406 / 0.225, max=(1 - 0.406) / 0.225)
+            imgs = imgs.data
 
-                    noise = self.recoverNoise(noise, adImg)
-                    adImg = np.clip(adImg + noise, a_min=0, a_max=255)
+            noise = self.recoverNoise(noise, adImg)
+            adImg = np.clip(adImg + noise, a_min=0, a_max=255)
 
-                    noise = (noise - np.min(noise)) / (np.max(noise) - np.min(noise))
-                    noise = (noise * 255).astype(np.uint8)
-                else:
-                    l2_dis = None
-                output_stracks_att = self.update(imgs, img_info, img_size, [], ids, track_id=None)
-                
-                return output_stracks_att, adImg, noise, l2_dis, suc
-
-                    
-                        
-                    
-
-
-                    
-            
-
-
-
-
+            noise = (noise - np.min(noise)) / (np.max(noise) - np.min(noise))
+            noise = (noise * 255).astype(np.uint8)
+        else:
+            l2_dis = None
+            adImg = imgs
+        output_stracks_att = self.update(imgs, img_info, img_size, [], ids, track_id=None)
+        
+        return output_stracks_ori,output_stracks_att, adImg, noise, l2_dis
 
 
     def update_attack_sg(self, imgs, img_info, img_size, data_list, ids, **kwargs):
