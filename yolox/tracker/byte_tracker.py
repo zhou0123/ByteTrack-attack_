@@ -16,6 +16,7 @@ from cython_bbox import bbox_overlaps as bbox_ious
 from scipy.optimize import linear_sum_assignment
 import cv2
 import random
+
 seed = 0
 random.seed(seed)
 np.random.seed(seed)
@@ -35,6 +36,7 @@ if seed == 0:
 mse = torch.nn.MSELoss()
 smoothL1 = torch.nn.SmoothL1Loss()
 
+
 def bbox_dis(bbox1, bbox2):
     center1 = (bbox1[:, :2] + bbox1[:, 2:]) / 2
     center2 = (bbox2[:, :2] + bbox2[:, 2:]) / 2
@@ -42,6 +44,7 @@ def bbox_dis(bbox1, bbox2):
     center2 = np.repeat(center2.reshape(1, -1, 2), len(bbox1), axis=0)
     dis = np.sqrt(np.sum((center1 - center2) ** 2, axis=-1))
     return dis
+
 
 class STrack(BaseTrack):
     shared_kalman = KalmanFilter()
@@ -266,7 +269,7 @@ class BYTETracker(object):
         self.frame_id = frame_id
         self.frame_id_ = frame_id
         self.args = args
-        #self.det_thresh = args.track_thresh
+        # self.det_thresh = args.track_thresh
         self.det_thresh = args.track_thresh + 0.1
         self.buffer_size = int(frame_rate / 30.0 * args.track_buffer)
         self.max_time_lost = self.buffer_size
@@ -279,7 +282,6 @@ class BYTETracker(object):
 
         self.mean = torch.tensor([0.485, 0.456, 0.406]).cuda()
         self.std = torch.tensor([0.229, 0.224, 0.225]).cuda()
-
 
         self.multiple_ori_ids = {}
         self.multiple_att_ids = {}
@@ -318,7 +320,7 @@ class BYTETracker(object):
         output = F.grid_sample(tensor, grid=grid, mode='bilinear', align_corners=True)
         return output
 
-    def ifgsm_adam_sg_random(
+    def attack_sg_random(
             self,
             imgs,
             img_info,
@@ -360,6 +362,7 @@ class BYTETracker(object):
             suc = True
 
         return noise, 1, suc
+
     def attack_mt(
             self,
             imgs,
@@ -419,181 +422,190 @@ class BYTETracker(object):
         hm_index = torch.cat([outputs_index_1, outputs_index_2])
         hm_index_ori = copy.deepcopy(hm_index)
 
-        Ws = [W//s for s in [8, 16, 32]]
-        Hs = [H//s for s in [8, 16, 32]]
+        Ws = [W // s for s in [8, 16, 32]]
+        Hs = [H // s for s in [8, 16, 32]]
 
         i = 0
-        j = -1
         suc = True
-        attack_det_center_maxs={}
-        target_det_center_maxs={}
-        for i in range(len(attack_inds)):
-            attack_det_center_maxs[i]=None
-            target_det_center_maxs[i]=None
+        attack_det_center_maxs = [None for _ in range(len(attack_inds))]
+        attack_det_center_mids = [None for _ in range(len(attack_inds))]
+        attack_det_center_mins = [None for _ in range(len(attack_inds))]
+        target_det_center_maxs = [None for _ in range(len(target_inds))]
+        target_det_center_mids = [None for _ in range(len(target_inds))]
+        target_det_center_mins = [None for _ in range(len(target_inds))]
 
-        
+        attack_outputs_inds = hm_index[attack_inds].clone()
+        target_outputs_inds = hm_index[target_inds].clone()
+
+        attack_is = [None for _ in range(len(attack_inds))]
+        target_is = [None for _ in range(len(target_inds))]
+
+        for j, attack_outputs_ind in enumerate(attack_outputs_inds):
+            for o_i in range(3):
+                if attack_outputs_ind >= Ws[o_i] * Hs[o_i]:
+                    attack_outputs_ind -= Ws[o_i] * Hs[o_i]
+                else:
+                    attack_is[j] = o_i
+                    break
+        for j, target_outputs_ind in enumerate(target_outputs_inds):
+            for o_i in range(3):
+                if target_outputs_ind >= Ws[o_i] * Hs[o_i]:
+                    target_outputs_ind -= Ws[o_i] * Hs[o_i]
+                else:
+                    target_is[j] = o_i
+                    break
+
+        assert None not in attack_is and None not in target_is
+        assert len(attack_inds) == len(target_inds)
+
+        ori_index = []
+        att_index = []
+
+        best_i = None
+        best_noise = None
+        best_fail = np.inf
 
         while True:
-            print("a"*100)
-            print(i)
+            i += 1
 
-            i+=1
-            loss=0
-            loss_att = 0
-            loss_ori = 0
-            loss_wh = 0
-            for ind_l,(attack_ind,target_ind) in enumerate(zip(attack_inds,target_inds)):
-
-                attack_outputs_ind = hm_index[attack_ind].clone()
-                target_outputs_ind = hm_index[target_ind].clone()
-
-                last_target_det_center=last_target_dets_center[ind_l]
-                last_attack_det_center=last_attack_dets_center[ind_l]
-
-
-                attack_det_center_max = attack_det_center_maxs[ind_l]
-                target_det_center_max = target_det_center_maxs[ind_l]
-
-                attack_i = None
-                target_i = None
-                for o_i in range(3):
-                    if attack_outputs_ind >= Ws[o_i] * Hs[o_i]:
-                        attack_outputs_ind -= Ws[o_i] * Hs[o_i]
-                    else:
-                        attack_i = o_i
-                        break
-                for o_i in range(3):
-                    if target_outputs_ind >= Ws[o_i] * Hs[o_i]:
-                        target_outputs_ind -= Ws[o_i] * Hs[o_i]
-                    else:
-                        target_i = o_i
-                        break
-
-                assert attack_i is not None and target_i is not None
-                ori_index = []
-                att_index = []
-
-                if i in [1, 10, 20, 30, 40, 45, 50, 55]:
-                    att_index_new = []
-                    attack_det_center = torch.stack([attack_outputs_ind % Ws[attack_i], attack_outputs_ind // Ws[attack_i]]).float().cuda()
-                    target_det_center = torch.stack([target_outputs_ind % Ws[target_i], target_outputs_ind // Ws[target_i]]).float().cuda()
-                    if attack_det_center_max is None:
-                        attack_det_center_max = torch.round(attack_det_center * 2 ** attack_i).int()
-                        attack_det_center_maxs[ind_l]=attack_det_center_max
-                        attack_det_center_mid = torch.round(attack_det_center_max / 2).int()
-                        attack_det_center_min = torch.round(attack_det_center_mid / 2).int()
-                        attack_outputs_ind_max_ori = (attack_det_center_max[0] + attack_det_center_max[1] * Ws[0]).clone()
-                        attack_outputs_ind_mid_ori = (attack_det_center_mid[0] + attack_det_center_mid[1] * Ws[1]
-                                                    + Ws[0] * Hs[0]).clone()
-                        attack_outputs_ind_min_ori = (attack_det_center_min[0] + attack_det_center_min[1] * Ws[2]
-                                                    + Ws[0] * Hs[0] + Ws[1] * Hs[1]).clone()
+            if i in [1, 10, 20, 30, 40, 45, 50, 55]:
+                att_index_new = []
+                att_index_new_temp = [[False, False] for _ in range(len(attack_inds))]
+                for j in range(len(attack_inds)):
+                    attack_outputs_ind = attack_outputs_inds[j]
+                    target_outputs_ind = target_outputs_inds[j]
+                    attack_i = attack_is[j]
+                    target_i = target_is[j]
+                    attack_det_center = torch.stack(
+                        [attack_outputs_ind % Ws[attack_i], attack_outputs_ind // Ws[attack_i]]).float().cuda()
+                    target_det_center = torch.stack(
+                        [target_outputs_ind % Ws[target_i], target_outputs_ind // Ws[target_i]]).float().cuda()
+                    if attack_det_center_maxs[j] is None:
+                        attack_det_center_maxs[j] = torch.round(attack_det_center * 2 ** attack_i).int()
+                        attack_det_center_mids[j] = torch.round(attack_det_center_maxs[j] / 2).int()
+                        attack_det_center_mins[j] = torch.round(attack_det_center_mids[j] / 2).int()
+                        attack_outputs_ind_max_ori = (attack_det_center_maxs[j][0] + attack_det_center_maxs[j][1] * Ws[0]).clone()
+                        attack_outputs_ind_mid_ori = (attack_det_center_mids[j][0] + attack_det_center_mids[j][1] * Ws[1]
+                                                      + Ws[0] * Hs[0]).clone()
+                        attack_outputs_ind_min_ori = (attack_det_center_mins[j][0] + attack_det_center_mins[j][1] * Ws[2]
+                                                      + Ws[0] * Hs[0] + Ws[1] * Hs[1]).clone()
                         ori_index.extend([
                             attack_outputs_ind_max_ori,
                             attack_outputs_ind_mid_ori,
                             attack_outputs_ind_min_ori
                         ])
-                    if target_det_center_max is None:
-                        target_det_center_max = torch.round(target_det_center * 2 ** target_i).int()
-                        attack_det_center_maxs[ind_l]=target_det_center_max
-                        target_det_center_mid = torch.round(target_det_center_max / 2).int()
-                        target_det_center_min = torch.round(target_det_center_mid / 2).int()
-                        target_outputs_ind_max_ori = (target_det_center_max[0] + target_det_center_max[1] * Ws[0]).clone()
-                        target_outputs_ind_mid_ori = (target_det_center_mid[0] + target_det_center_mid[1] * Ws[1]
-                                                    + Ws[0] * Hs[0]).clone()
-                        target_outputs_ind_min_ori = (target_det_center_min[0] + target_det_center_min[1] * Ws[2]
-                                                    + Ws[0] * Hs[0] + Ws[1] * Hs[1]).clone()
+                    if target_det_center_maxs[j] is None:
+                        target_det_center_maxs[j] = torch.round(target_det_center * 2 ** target_i).int()
+                        target_det_center_mids[j] = torch.round(target_det_center_maxs[j] / 2).int()
+                        target_det_center_mins[j] = torch.round(target_det_center_mids[j] / 2).int()
+                        target_outputs_ind_max_ori = (target_det_center_maxs[j][0] + target_det_center_maxs[j][1] * Ws[0]).clone()
+                        target_outputs_ind_mid_ori = (target_det_center_mids[j][0] + target_det_center_mids[j][1] * Ws[1]
+                                                      + Ws[0] * Hs[0]).clone()
+                        target_outputs_ind_min_ori = (target_det_center_mins[j][0] + target_det_center_mins[j][1] * Ws[2]
+                                                      + Ws[0] * Hs[0] + Ws[1] * Hs[1]).clone()
                         ori_index.extend([
                             target_outputs_ind_max_ori,
                             target_outputs_ind_mid_ori,
                             target_outputs_ind_min_ori
                         ])
-                    if last_target_det_center is not None:
-                        last_target_det_center_ = last_target_det_center * Ws[0]/W
-                        attack_center_delta = attack_det_center_max - last_target_det_center_
+                    if last_target_dets_center[j] is not None:
+                        last_target_det_center_ = last_target_dets_center[j] * Ws[0] / W
+                        attack_center_delta = attack_det_center_maxs[j] - last_target_det_center_
                         if torch.max(torch.abs(attack_center_delta)) > 1:
                             attack_center_delta /= torch.max(torch.abs(attack_center_delta))
-                            attack_det_center_max = torch.round(attack_det_center_max - attack_center_delta).int()
-                            attack_det_center_mid = torch.round(attack_det_center_max / 2).int()
-                            attack_det_center_min = torch.round(attack_det_center_mid / 2).int()
-                            attack_outputs_ind_max = attack_det_center_max[0] + attack_det_center_max[1] * Ws[0]
-                            attack_outputs_ind_mid = attack_det_center_mid[0] + attack_det_center_mid[1] * Ws[1] \
-                                                    + Ws[0] * Hs[0]
-                            attack_outputs_ind_min = attack_det_center_min[0] + attack_det_center_min[1] * Ws[2] \
-                                                    + Ws[0] * Hs[0] + Ws[1] * Hs[1]
+                            attack_det_center_maxs[j] = torch.round(attack_det_center_maxs[j] - attack_center_delta).int()
+                            attack_det_center_mids[j] = torch.round(attack_det_center_maxs[j] / 2).int()
+                            attack_det_center_mins[j] = torch.round(attack_det_center_mids[j] / 2).int()
+                            attack_outputs_ind_max = attack_det_center_maxs[j][0] + attack_det_center_maxs[j][1] * Ws[0]
+                            attack_outputs_ind_mid = attack_det_center_mids[j][0] + attack_det_center_mids[j][1] * Ws[1] \
+                                                     + Ws[0] * Hs[0]
+                            attack_outputs_ind_min = attack_det_center_mins[j][0] + attack_det_center_mins[j][1] * Ws[2] \
+                                                     + Ws[0] * Hs[0] + Ws[1] * Hs[1]
                             att_index_new.extend([
                                 attack_outputs_ind_max,
                                 attack_outputs_ind_mid,
                                 attack_outputs_ind_min
                             ])
-                    if last_attack_det_center is not None:
-                        last_attack_det_center_ = last_attack_det_center * Ws[0]/W
-                        target_center_delta = target_det_center_max - last_attack_det_center_
+                            att_index_new_temp[j][0] = True
+                    if last_attack_dets_center[j] is not None:
+                        last_attack_det_center_ = last_attack_dets_center[j] * Ws[0] / W
+                        target_center_delta = target_det_center_maxs[j] - last_attack_det_center_
                         if torch.max(torch.abs(target_center_delta)) > 1:
                             target_center_delta /= torch.max(torch.abs(target_center_delta))
-                            target_det_center_max = torch.round(target_det_center_max - target_center_delta).int()
-                            target_det_center_mid = torch.round(target_det_center_max / 2).int()
-                            target_det_center_min = torch.round(target_det_center_mid / 2).int()
-                            target_outputs_ind_max = target_det_center_max[0] + target_det_center_max[1] * Ws[0]
-                            target_outputs_ind_mid = target_det_center_mid[0] + target_det_center_mid[1] * Ws[1] \
-                                                    + Ws[0] * Hs[0]
-                            target_outputs_ind_min = target_det_center_min[0] + target_det_center_min[1] * Ws[2] \
-                                                    + Ws[0] * Hs[0] + Ws[1] * Hs[1]
+                            target_det_center_maxs[j] = torch.round(target_det_center_maxs[j] - target_center_delta).int()
+                            target_det_center_mids[j] = torch.round(target_det_center_maxs[j] / 2).int()
+                            target_det_center_mins[j] = torch.round(target_det_center_mids[j] / 2).int()
+                            target_outputs_ind_max = target_det_center_maxs[j][0] + target_det_center_maxs[j][1] * Ws[0]
+                            target_outputs_ind_mid = target_det_center_mids[j][0] + target_det_center_mids[j][1] * Ws[1] \
+                                                     + Ws[0] * Hs[0]
+                            target_outputs_ind_min = target_det_center_mins[j][0] + target_det_center_mins[j][1] * Ws[2] \
+                                                     + Ws[0] * Hs[0] + Ws[1] * Hs[1]
                             att_index_new.extend([
                                 target_outputs_ind_max,
                                 target_outputs_ind_mid,
                                 target_outputs_ind_min
                             ])
+                            att_index_new_temp[j][1] = True
 
-                    if len(ori_index) and isinstance(ori_index, list):
-                        ori_index_re = torch.stack(ori_index[3:] + ori_index[:3]).type(torch.int64)
-                        ori_index = torch.stack(ori_index).type(torch.int64)
-                    if len(att_index_new):
-                        att_index_new = torch.stack(att_index_new).type(torch.int64)
-                        if len(att_index_new) == 3:
-                            if last_target_det_center is None:
-                                ori_index_re_ = ori_index_re[3:]
-                            else:
-                                ori_index_re_ = ori_index_re[:3]
-                        else:
-                            ori_index_re_ = ori_index_re
-                    if len(att_index_new):
-                        att_index = att_index_new
-                
-                if len(att_index):
-                    n_att_index_lst = []
-                    n_ori_index_lst = []
-                    max_size = len(outputs) - 1
-                    for hm_ind in range(len(att_index) // 3):
-                        for n_i in range(3):
-                            for n_j in range(3):
-                                att_hm_ind = att_index[hm_ind * 3].item()
-                                att_hm_ind = att_hm_ind + (n_i - 1) * Ws[0] + (n_j - 1)
-                                att_hm_ind = max(0, min(Hs[0]*Ws[0]-1, att_hm_ind))
-                                n_att_index_lst.append(max(0, min(max_size, att_hm_ind)))
-                                ori_hm_ind = ori_index_re_[hm_ind * 3].item()
-                                ori_hm_ind = ori_hm_ind + (n_i - 1) * Ws[0] + (n_j - 1)
-                                ori_hm_ind = max(0, min(Hs[0]*Ws[0]-1, ori_hm_ind))
-                                n_ori_index_lst.append(max(0, min(max_size, ori_hm_ind)))
-                        n_att_index_lst.append(max(0, min(max_size, att_index[hm_ind * 3 + 1].item())))
-                        n_att_index_lst.append(max(0, min(max_size, att_index[hm_ind * 3 + 2].item())))
-                        n_ori_index_lst.append(max(0, min(max_size, ori_index_re_[hm_ind * 3 + 1].item())))
-                        n_ori_index_lst.append(max(0, min(max_size, ori_index_re_[hm_ind * 3 + 2].item())))
-                    loss_att += ((1 - outputs[:, -1][n_att_index_lst]) ** 2 *
-                            torch.log(torch.clip(outputs[:, -1][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
-                    loss_att += ((1 - outputs[:, -2][n_att_index_lst]) ** 2 *
-                                torch.log(torch.clip(outputs[:, -2][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
-                    loss_ori += ((outputs[:, -1][n_ori_index_lst]) ** 2 *
-                            torch.log(torch.clip(1-outputs[:, -1][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
-                    loss_ori += ((outputs[:, -2][n_ori_index_lst]) ** 2 *
-                                torch.log(torch.clip(1 - outputs[:, -2][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
+                if len(ori_index) and isinstance(ori_index, list):
+                    assert len(ori_index) == 6 * len(attack_inds)
+                    ori_index_re = []
+                    for j in range(len(attack_inds)):
+                        ori_index_re.extend(ori_index[6*j+3:6*(j+1)] + ori_index[6*j:6*j+3])
+                    ori_index_re = torch.stack(ori_index_re).type(torch.int64)
+                    ori_index = torch.stack(ori_index).type(torch.int64)
 
-                    outputs_wh = outputs[:, 2:4][n_att_index_lst] - outputs[:, :2][n_att_index_lst]
-                    loss_wh += -smoothL1(outputs_wh, reg_wh[n_ori_index_lst])
+                if len(att_index_new):
+                    att_index_new = torch.stack(att_index_new).type(torch.int64)
+                    ori_index_re_ = []
+                    for j in range(len(attack_inds)):
+                        if att_index_new_temp[j][0]:
+                            ori_index_re_.extend(ori_index_re[6*j:6*j+3])
+                        if att_index_new_temp[j][1]:
+                            ori_index_re_.extend(ori_index_re[6*j+3:6*(j+1)])
+                    assert len(att_index_new) == len(ori_index_re_)
+                if len(att_index_new):
+                    att_index = att_index_new
+            loss_att = 0
+            loss_ori = 0
+            loss_wh = 0
+            if len(att_index):
+                n_att_index_lst = []
+                n_ori_index_lst = []
+                max_size = len(outputs) - 1
+                for hm_ind in range(len(att_index) // 3):
+                    for n_i in range(3):
+                        for n_j in range(3):
+                            att_hm_ind = att_index[hm_ind * 3].item()
+                            att_hm_ind = att_hm_ind + (n_i - 1) * Ws[0] + (n_j - 1)
+                            att_hm_ind = max(0, min(Hs[0] * Ws[0] - 1, att_hm_ind))
+                            n_att_index_lst.append(max(0, min(max_size, att_hm_ind)))
+                            ori_hm_ind = ori_index_re_[hm_ind * 3].item()
+                            ori_hm_ind = ori_hm_ind + (n_i - 1) * Ws[0] + (n_j - 1)
+                            ori_hm_ind = max(0, min(Hs[0] * Ws[0] - 1, ori_hm_ind))
+                            n_ori_index_lst.append(max(0, min(max_size, ori_hm_ind)))
+                    n_att_index_lst.append(max(0, min(max_size, att_index[hm_ind * 3 + 1].item())))
+                    n_att_index_lst.append(max(0, min(max_size, att_index[hm_ind * 3 + 2].item())))
+                    n_ori_index_lst.append(max(0, min(max_size, ori_index_re_[hm_ind * 3 + 1].item())))
+                    n_ori_index_lst.append(max(0, min(max_size, ori_index_re_[hm_ind * 3 + 2].item())))
+                loss_att += ((1 - outputs[:, -1][n_att_index_lst]) ** 2 *
+                             torch.log(torch.clip(outputs[:, -1][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
+                loss_att += ((1 - outputs[:, -2][n_att_index_lst]) ** 2 *
+                             torch.log(torch.clip(outputs[:, -2][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
+                loss_ori += ((outputs[:, -1][n_ori_index_lst]) ** 2 *
+                             torch.log(torch.clip(1 - outputs[:, -1][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
+                loss_ori += ((outputs[:, -2][n_ori_index_lst]) ** 2 *
+                             torch.log(torch.clip(1 - outputs[:, -2][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
 
-                loss =loss+loss_att + loss_ori + loss_wh * 0.1
+                outputs_wh = outputs[:, 2:4][n_att_index_lst] - outputs[:, :2][n_att_index_lst]
+                loss_wh += -smoothL1(outputs_wh, reg_wh[n_ori_index_lst])
+
+            loss = loss_att + loss_ori + loss_wh * 0.1
+
             if isinstance(loss, float):
                 suc = False
                 break
+
             loss.backward()
             grad = imgs.grad
             grad /= (grad ** 2).sum().sqrt() + 1e-8
@@ -625,21 +637,13 @@ class BYTETracker(object):
                     best_i = i
                     best_noise = noise.clone()
             if i > 60:
-                if self.args.no_f_noise:
-                    return None, i, False
-                else:
-                    if best_i is not None:
-                        noise = best_noise
-                        i = best_i
-                    return noise, i, False
+                if best_i is not None:
+                    noise = best_noise
+                    i = best_i
+                return noise, i, False
         return noise, i, True
 
-        
-
-
-
-
-    def ifgsm_adam_sg(
+    def attack_sg(
             self,
             imgs,
             img_info,
@@ -687,14 +691,12 @@ class BYTETracker(object):
         hm_index = torch.cat([outputs_index_1, outputs_index_2])
         hm_index_ori = copy.deepcopy(hm_index)
 
-        Ws = [W//s for s in [8, 16, 32]]
-        Hs = [H//s for s in [8, 16, 32]]
+        Ws = [W // s for s in [8, 16, 32]]
+        Hs = [H // s for s in [8, 16, 32]]
 
         i = 0
         j = -1
         suc = True
-        ori_index = []
-        att_index = []
         attack_det_center_max = None
         target_det_center_max = None
         attack_outputs_ind = hm_index[attack_ind].clone()
@@ -723,8 +725,10 @@ class BYTETracker(object):
 
             if i in [1, 10, 20, 30, 40, 45, 50, 55]:
                 att_index_new = []
-                attack_det_center = torch.stack([attack_outputs_ind % Ws[attack_i], attack_outputs_ind // Ws[attack_i]]).float().cuda()
-                target_det_center = torch.stack([target_outputs_ind % Ws[target_i], target_outputs_ind // Ws[target_i]]).float().cuda()
+                attack_det_center = torch.stack(
+                    [attack_outputs_ind % Ws[attack_i], attack_outputs_ind // Ws[attack_i]]).float().cuda()
+                target_det_center = torch.stack(
+                    [target_outputs_ind % Ws[target_i], target_outputs_ind // Ws[target_i]]).float().cuda()
                 if attack_det_center_max is None:
                     attack_det_center_max = torch.round(attack_det_center * 2 ** attack_i).int()
                     attack_det_center_mid = torch.round(attack_det_center_max / 2).int()
@@ -754,7 +758,7 @@ class BYTETracker(object):
                         target_outputs_ind_min_ori
                     ])
                 if last_target_det_center is not None:
-                    last_target_det_center_ = last_target_det_center * Ws[0]/W
+                    last_target_det_center_ = last_target_det_center * Ws[0] / W
                     attack_center_delta = attack_det_center_max - last_target_det_center_
                     if torch.max(torch.abs(attack_center_delta)) > 1:
                         attack_center_delta /= torch.max(torch.abs(attack_center_delta))
@@ -772,7 +776,7 @@ class BYTETracker(object):
                             attack_outputs_ind_min
                         ])
                 if last_attack_det_center is not None:
-                    last_attack_det_center_ = last_attack_det_center * Ws[0]/W
+                    last_attack_det_center_ = last_attack_det_center * Ws[0] / W
                     target_center_delta = target_det_center_max - last_attack_det_center_
                     if torch.max(torch.abs(target_center_delta)) > 1:
                         target_center_delta /= torch.max(torch.abs(target_center_delta))
@@ -816,22 +820,22 @@ class BYTETracker(object):
                         for n_j in range(3):
                             att_hm_ind = att_index[hm_ind * 3].item()
                             att_hm_ind = att_hm_ind + (n_i - 1) * Ws[0] + (n_j - 1)
-                            att_hm_ind = max(0, min(Hs[0]*Ws[0]-1, att_hm_ind))
+                            att_hm_ind = max(0, min(Hs[0] * Ws[0] - 1, att_hm_ind))
                             n_att_index_lst.append(max(0, min(max_size, att_hm_ind)))
                             ori_hm_ind = ori_index_re_[hm_ind * 3].item()
                             ori_hm_ind = ori_hm_ind + (n_i - 1) * Ws[0] + (n_j - 1)
-                            ori_hm_ind = max(0, min(Hs[0]*Ws[0]-1, ori_hm_ind))
+                            ori_hm_ind = max(0, min(Hs[0] * Ws[0] - 1, ori_hm_ind))
                             n_ori_index_lst.append(max(0, min(max_size, ori_hm_ind)))
                     n_att_index_lst.append(max(0, min(max_size, att_index[hm_ind * 3 + 1].item())))
                     n_att_index_lst.append(max(0, min(max_size, att_index[hm_ind * 3 + 2].item())))
                     n_ori_index_lst.append(max(0, min(max_size, ori_index_re_[hm_ind * 3 + 1].item())))
                     n_ori_index_lst.append(max(0, min(max_size, ori_index_re_[hm_ind * 3 + 2].item())))
                 loss_att += ((1 - outputs[:, -1][n_att_index_lst]) ** 2 *
-                         torch.log(torch.clip(outputs[:, -1][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
+                             torch.log(torch.clip(outputs[:, -1][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
                 loss_att += ((1 - outputs[:, -2][n_att_index_lst]) ** 2 *
                              torch.log(torch.clip(outputs[:, -2][n_att_index_lst], min=1e-4, max=1 - 1e-4))).mean()
                 loss_ori += ((outputs[:, -1][n_ori_index_lst]) ** 2 *
-                         torch.log(torch.clip(1-outputs[:, -1][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
+                             torch.log(torch.clip(1 - outputs[:, -1][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
                 loss_ori += ((outputs[:, -2][n_ori_index_lst]) ** 2 *
                              torch.log(torch.clip(1 - outputs[:, -2][n_ori_index_lst], min=1e-4, max=1 - 1e-4))).mean()
 
@@ -873,16 +877,16 @@ class BYTETracker(object):
         return noise, i, suc
 
     def forwardFeatureMt(
-        self,
-        imgs,
-        img_info,
-        dets_,
-        dets_second_,
-        attack_ids,
-        attack_inds,
-        target_ids,
-        target_inds,
-        last_info
+            self,
+            imgs,
+            img_info,
+            dets_,
+            dets_second_,
+            attack_ids,
+            attack_inds,
+            target_ids,
+            target_inds,
+            last_info
     ):
         width = img_info[1][0].item()
         height = img_info[0][0].item()
@@ -891,8 +895,8 @@ class BYTETracker(object):
 
         imgs.requires_grad = True
         self.model_2.zero_grad()
-
         outputs = self.model_2(imgs)
+
         if self.decoder is not None:
             outputs = self.decoder(outputs, dtype=outputs.type())
 
@@ -926,8 +930,10 @@ class BYTETracker(object):
 
         dets_all_ = np.concatenate([dets_, dets_second_])
         dets_all = np.concatenate([dets, dets_second])
+        dets_index = [i for i in range(len(dets))]
+        dets_second_index = [i + len(dets) for i in range(len(dets_second))]
 
-        ious = bbox_ious(np.ascontiguousarray(dets_all_[:,:4], dtype=np.float64),
+        ious = bbox_ious(np.ascontiguousarray(dets_all_[:, :4], dtype=np.float64),
                          np.ascontiguousarray(dets_all[:, :4], dtype=np.float64))
 
         row_inds, col_inds = linear_sum_assignment(-ious)
@@ -955,10 +961,10 @@ class BYTETracker(object):
                     break
         if not match:
             dets = dets_
-            dets_second=dets_second_
+            dets_second = dets_second_
         fail_ids = 0
         if not match:
-            return outputs,None
+            return outputs, None
         ae_attack_inds = []
         ae_attack_ids = []
         for i in range(len(row_inds)):
@@ -1007,8 +1013,8 @@ class BYTETracker(object):
         for itracked, idet in matches:
             track = strack_pool[itracked]
             det = detections[idet]
-            if dets_index[idet] in ae_attack_inds:
-                index = ae_attack_inds.index(dets_index[idet])
+            if dets_second_index[idet] in ae_attack_inds:
+                index = ae_attack_inds.index(dets_second_index[idet])
                 if track.track_id == ae_attack_ids[index]:
                     fail_ids += 1
 
@@ -1023,12 +1029,7 @@ class BYTETracker(object):
                 index = ae_attack_inds.index(dets_index[idet])
                 if track.track_id == ae_attack_ids[index]:
                     fail_ids += 1
-        return outputs,fail_ids
-        
-        
-        
-
-
+        return outputs, fail_ids
 
     def forwardFeatureSg(
             self,
@@ -1049,8 +1050,8 @@ class BYTETracker(object):
 
         imgs.requires_grad = True
         self.model_2.zero_grad()
-
         outputs = self.model_2(imgs)
+
         if self.decoder is not None:
             outputs = self.decoder(outputs, dtype=outputs.type())
 
@@ -1177,7 +1178,6 @@ class BYTETracker(object):
 
         return outputs, ae_attack_id, ae_target_id, hm_index
 
-
     def CheckFit(self, dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds):
         ad_attack_ids_ = [self.multiple_ori2att[attack_id] for attack_id in attack_ids] \
             if self.args.attack == 'multiple' else [attack_ids]
@@ -1248,7 +1248,7 @@ class BYTETracker(object):
         ad_dets = np.array(ad_attack_dets)
 
         ious = bbox_ious(ori_dets.astype(np.float64), ad_dets.astype(np.float64))
-        #ious_inds = np.argmax(ious, axis=1)
+        # ious_inds = np.argmax(ious, axis=1)
         row_ind, col_ind = linear_sum_assignment(-ious)
         attack_index = []
         # for i, ind in enumerate(ious_inds):
@@ -1256,14 +1256,14 @@ class BYTETracker(object):
         #         attack_index.append(i)
         for i in range(len(row_ind)):
             if self.args.attack == 'multiple':
-                if ious[row_ind[i], col_ind[i]] > 0.9 and self.multiple_ori2att[attack_ids[row_ind[i]]] == ad_attack_ids[col_ind[i]]:
+                if ious[row_ind[i], col_ind[i]] > 0.9 and self.multiple_ori2att[attack_ids[row_ind[i]]] == \
+                        ad_attack_ids[col_ind[i]]:
                     attack_index.append(row_ind[i])
             else:
                 if ious[row_ind[i], col_ind[i]] > 0.9:
                     attack_index.append(row_ind[i])
 
         return attack_index
-
 
     def update(self, imgs, img_info, img_size, data_list, ids, **kwargs):
         self.frame_id += 1
@@ -1355,7 +1355,7 @@ class BYTETracker(object):
         if len(dets_second) > 0:
             '''Detections'''
             detections_second = [STrack(STrack.tlbr_to_tlwh(tlbr), s) for
-                          (tlbr, s) in zip(dets_second, scores_second)]
+                                 (tlbr, s) in zip(dets_second, scores_second)]
         else:
             detections_second = []
         r_tracked_stracks = [strack_pool[i] for i in u_track if strack_pool[i].state == TrackState.Tracked]
@@ -1423,6 +1423,7 @@ class BYTETracker(object):
         }
 
         return output_stracks
+
     def update_attack_mt(self, imgs, img_info, img_size, data_list, ids, **kwargs):
         self.frame_id_ += 1
         activated_starcks = []
@@ -1431,6 +1432,7 @@ class BYTETracker(object):
         removed_stracks = []
 
         imgs.requires_grad = True
+        # model_2 = copy.deepcopy(self.model_2)
         self.model_2.zero_grad()
         outputs = self.model_2(imgs)
 
@@ -1465,7 +1467,7 @@ class BYTETracker(object):
         outputs_index_1 = outputs_index[remain_inds]
         outputs_index_2 = outputs_index[inds_second]
 
-        dets_ids = [None for _ in range(len(dets)+len(dets_second))]
+        dets_ids = [None for _ in range(len(dets) + len(dets_second))]
 
         if len(dets) > 0:
             '''Detections'''
@@ -1582,13 +1584,13 @@ class BYTETracker(object):
             self.multiple_ori_ids[track.track_id] += 1
             if self.multiple_ori_ids[track.track_id] <= self.FRAME_THR:
                 output_stracks_ori_ind.append(ind)
-        
+
         noise = None
         attack_ids = []
         target_ids = []
         attack_inds = []
         target_inds = []
-        
+
         if len(dets_) > 0:
             ious = bbox_ious(np.ascontiguousarray(dets_[:, :4], dtype=np.float64),
                              np.ascontiguousarray(dets_[:, :4], dtype=np.float64))
@@ -1624,53 +1626,58 @@ class BYTETracker(object):
                         target_ids.append(dets_ids[dis_inds[attack_ind]])
                         attack_inds.append(attack_ind)
                         target_inds.append(dis_inds[attack_ind])
-                fit_index = self.CheckFit(dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds)
-                if fit_index:
-                    attack_ids = np.array(attack_ids)[fit_index]
-                    target_ids = np.array(target_ids)[fit_index]
-                    attack_inds = np.array(attack_inds)[fit_index]
-                    target_inds = np.array(target_inds)[fit_index]     
+            fit_index = self.CheckFit(dets, scores_keep, dets_second, scores_second, attack_ids, attack_inds) if len(attack_ids) else []
+            if fit_index:
+                attack_ids = np.array(attack_ids)[fit_index]
+                target_ids = np.array(target_ids)[fit_index]
+                attack_inds = np.array(attack_inds)[fit_index]
+                target_inds = np.array(target_inds)[fit_index]
 
-                    if self.args.rand:
-                        noise, attack_iter, suc = self.attack_mt_random(
-                            imgs,
-                            img_info,
-                            dets,
-                            dets_second,
-                            outputs_index_1,
-                            outputs_index_2,
-                            last_info,
-                            outputs_ori,
-                            attack_ids,
-                            attack_inds,
-                            target_ids,
-                            target_inds
-                        )
-                    else:
-                        noise, attack_iter, suc = self.attack_mt(
-                            imgs,
-                            img_info,
-                            dets,
-                            dets_second,
-                            outputs_index_1,
-                            outputs_index_2,
-                            last_info=self.ad_last_info,
-                            outputs_ori=outputs,
-                            attack_ids=attack_ids,
-                            attack_inds=attack_inds,
-                            target_ids=target_ids,
-                            target_inds=target_inds
-                        )
-                    self.low_iou_ids.update(set(attack_ids))
-                    if suc:
-                        self.attacked_ids.update(set(attack_ids))
-                        print(
-                            f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: SUCCESS\tl2 distance: {(noise ** 2).sum().sqrt().item()}\titeration: {attack_iter}')
-                    else:
-                        print(f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: FAIL\tl2 distance: {(noise ** 2).sum().sqrt().item() if noise is not None else None}\titeration: {attack_iter}')
-                    adImg = cv2.imread(os.path.join(self.args.img_dir, img_info[-1][0]))
+                if self.args.rand:
+                    noise, attack_iter, suc = self.attack_mt_random(
+                        imgs,
+                        img_info,
+                        dets,
+                        dets_second,
+                        outputs_index_1,
+                        outputs_index_2,
+                        last_info,
+                        outputs_ori,
+                        attack_ids,
+                        attack_inds,
+                        target_ids,
+                        target_inds
+                    )
+                else:
+                    noise, attack_iter, suc = self.attack_mt(
+                        imgs,
+                        img_info,
+                        dets,
+                        dets_second,
+                        outputs_index_1,
+                        outputs_index_2,
+                        last_info=self.ad_last_info,
+                        outputs_ori=outputs,
+                        attack_ids=attack_ids,
+                        attack_inds=attack_inds,
+                        target_ids=target_ids,
+                        target_inds=target_inds
+                    )
+                self.low_iou_ids.update(set(attack_ids))
+                if suc:
+                    self.attacked_ids.update(set(attack_ids))
+                    print(
+                        f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: SUCCESS\tl2 distance: {(noise ** 2).sum().sqrt().item()}\titeration: {attack_iter}')
+                else:
+                    print(
+                        f'attack ids: {attack_ids}\tattack frame {self.frame_id_}: FAIL\tl2 distance: {(noise ** 2).sum().sqrt().item() if noise is not None else None}\titeration: {attack_iter}')
+
+        adImg = cv2.imread(os.path.join(self.args.img_dir, img_info[-1][0]))
+        if adImg is None:
+            import pdb; pdb.set_trace()
         if noise is not None:
             l2_dis = (noise ** 2).sum().sqrt().item()
+
             imgs = (imgs + noise)
             imgs[0, 0] = torch.clip(imgs[0, 0], min=-0.485 / 0.229, max=(1 - 0.485) / 0.229)
             imgs[0, 1] = torch.clip(imgs[0, 1], min=-0.456 / 0.224, max=(1 - 0.456) / 0.224)
@@ -1684,7 +1691,7 @@ class BYTETracker(object):
             noise = (noise * 255).astype(np.uint8)
         else:
             l2_dis = None
-            adImg = imgs
+
         output_stracks_att = self.update(imgs, img_info, img_size, [], ids, track_id=None)
         output_stracks_att_ind = []
         for ind, track in enumerate(output_stracks_att):
@@ -1705,9 +1712,8 @@ class BYTETracker(object):
                     ori_id = output_stracks_ori[output_stracks_ori_ind[row_ind[i]]].track_id
                     att_id = output_stracks_att[output_stracks_att_ind[col_ind[i]]].track_id
                     self.multiple_ori2att[ori_id] = att_id
-        
-        return output_stracks_ori,output_stracks_att, adImg, noise, l2_dis
 
+        return output_stracks_ori, output_stracks_att, adImg, noise, l2_dis
 
     def update_attack_sg(self, imgs, img_info, img_size, data_list, ids, **kwargs):
         self.frame_id_ += 1
@@ -1755,7 +1761,7 @@ class BYTETracker(object):
         outputs_index_1 = outputs_index[remain_inds]
         outputs_index_2 = outputs_index[inds_second]
 
-        dets_ids = [None for _ in range(len(dets)+len(dets_second))]
+        dets_ids = [None for _ in range(len(dets) + len(dets_second))]
 
         if len(dets) > 0:
             '''Detections'''
@@ -1886,7 +1892,7 @@ class BYTETracker(object):
                     target_id = dets_ids[target_ind]
                     if fit:
                         if self.args.rand:
-                            noise, attack_iter, suc = self.ifgsm_adam_sg_random(
+                            noise, attack_iter, suc = self.attack_sg_random(
                                 imgs,
                                 img_info,
                                 dets,
@@ -1901,7 +1907,7 @@ class BYTETracker(object):
                                 target_ind=target_ind
                             )
                         else:
-                            noise, attack_iter, suc = self.ifgsm_adam_sg(
+                            noise, attack_iter, suc = self.attack_sg(
                                 imgs,
                                 img_info,
                                 dets,
@@ -1958,6 +1964,7 @@ class BYTETracker(object):
         output_stracks_att = self.update(imgs, img_info, img_size, [], ids, track_id=self_track_id_att)
 
         return output_stracks_att, adImg, noise, l2_dis, suc
+
 
 def joint_stracks(tlista, tlistb):
     exists = {}
