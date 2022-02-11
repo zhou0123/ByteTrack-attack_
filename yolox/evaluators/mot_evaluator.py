@@ -270,6 +270,9 @@ class MOTEvaluator:
         vdos = 0
         os.makedirs(self.args.output_dir, exist_ok=True)
         model2 = copy.deepcopy(model)
+        tracker = BYTETracker(self.args, self.num_classes, self.confthre, self.nmsthre, self.convert_to_coco_format, model=model,model2=model2,decoder=decoder)
+                
+        
         for cur_iter, (imgs, _, info_imgs, ids) in enumerate(
             self.dataloader
         ):
@@ -330,7 +333,8 @@ class MOTEvaluator:
                 last_vdo_=last_vdo
                 last_vdo = video_name
                 
-                tracker = BYTETracker(self.args, self.num_classes, self.confthre, self.nmsthre, self.convert_to_coco_format, model=model, decoder=decoder)
+                tracker = BYTETracker(self.args, self.num_classes, self.confthre, self.nmsthre, self.convert_to_coco_format, model=model,model2=model2,decoder=decoder)
+                
                 if len(results) != 0:
                     result_filename = os.path.join(result_folder, '{}.txt'.format(video_names[video_id - 1]))
                     if self.args.attack == "multiple":

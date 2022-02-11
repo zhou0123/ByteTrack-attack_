@@ -434,6 +434,8 @@ class BYTETracker(object):
         
 
         while True:
+            print("a"*100)
+            print(i)
 
             i+=1
             loss=0
