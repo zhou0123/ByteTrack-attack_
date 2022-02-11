@@ -285,6 +285,8 @@ class BYTETracker(object):
         self.multiple_att_ids = {}
         self.multiple_ori2att = {}
         self.multiple_att_freq = {}
+        self.low_iou_ids = set([])
+        self.attacked_ids = set([])
 
     def recoverNoise(self, noise, img0):
         height = 800
@@ -393,17 +395,14 @@ class BYTETracker(object):
         for strack in strack_pool:
             if strack.track_id in ad_attack_ids:
                 index = ad_attack_ids.index(strack.track_id)
-                last_ad_id_features[attack_inds[index]] = strack.smooth_feat
                 last_attack_dets[index] = torch.from_numpy(strack.tlbr).cuda().float()
                 last_attack_dets[index][[0, 2]] = (last_attack_dets[index][[0, 2]] - 0.5 * W * (r_w - r_max)) / r_max
                 last_attack_dets[index][[1, 3]] = (last_attack_dets[index][[1, 3]] - 0.5 * H * (r_h - r_max)) / r_max
             if strack.track_id in ad_target_ids:
                 index = ad_target_ids.index(strack.track_id)
-                last_ad_id_features[target_inds[index]] = strack.smooth_feat
                 last_target_dets[index] = torch.from_numpy(strack.tlbr).cuda().float()
                 last_target_dets[index][[0, 2]] = (last_target_dets[index][[0, 2]] - 0.5 * W * (r_w - r_max)) / r_max
                 last_target_dets[index][[1, 3]] = (last_target_dets[index][[1, 3]] - 0.5 * H * (r_h - r_max)) / r_max
-
         last_attack_dets_center = []
         for det in last_attack_dets:
             if det is None:
@@ -426,7 +425,13 @@ class BYTETracker(object):
         i = 0
         j = -1
         suc = True
+        attack_det_center_maxs={}
+        target_det_center_maxs={}
+        for i in range(len(attack_inds)):
+            attack_det_center_maxs[i]=None
+            target_det_center_maxs[i]=None
 
+        
 
         while True:
 
@@ -435,10 +440,17 @@ class BYTETracker(object):
             loss_att = 0
             loss_ori = 0
             loss_wh = 0
-            for attack_ind,target_ind in zip(attack_inds,target_inds):
+            for ind_l,(attack_ind,target_ind) in enumerate(zip(attack_inds,target_inds)):
 
                 attack_outputs_ind = hm_index[attack_ind].clone()
                 target_outputs_ind = hm_index[target_ind].clone()
+
+                last_target_det_center=last_target_dets_center[ind_l]
+                last_attack_det_center=last_attack_dets_center[ind_l]
+
+
+                attack_det_center_max = attack_det_center_maxs[ind_l]
+                target_det_center_max = attack_det_center_maxs[ind_l]
 
                 attack_i = None
                 target_i = None
@@ -465,6 +477,7 @@ class BYTETracker(object):
                     target_det_center = torch.stack([target_outputs_ind % Ws[target_i], target_outputs_ind // Ws[target_i]]).float().cuda()
                     if attack_det_center_max is None:
                         attack_det_center_max = torch.round(attack_det_center * 2 ** attack_i).int()
+                        attack_det_center_maxs[ind_l]=attack_det_center_max
                         attack_det_center_mid = torch.round(attack_det_center_max / 2).int()
                         attack_det_center_min = torch.round(attack_det_center_mid / 2).int()
                         attack_outputs_ind_max_ori = (attack_det_center_max[0] + attack_det_center_max[1] * Ws[0]).clone()
@@ -479,6 +492,7 @@ class BYTETracker(object):
                         ])
                     if target_det_center_max is None:
                         target_det_center_max = torch.round(target_det_center * 2 ** target_i).int()
+                        attack_det_center_maxs[ind_l]=target_det_center_max
                         target_det_center_mid = torch.round(target_det_center_max / 2).int()
                         target_det_center_min = torch.round(target_det_center_mid / 2).int()
                         target_outputs_ind_max_ori = (target_det_center_max[0] + target_det_center_max[1] * Ws[0]).clone()
@@ -591,11 +605,10 @@ class BYTETracker(object):
             imgs = imgs.data
 
             outputs, fail_ids = self.forwardFeatureMt(
-                im_blob,
-                img0,
+                imgs,
+                img_info,
                 dets,
-                inds,
-                remain_inds,
+                dets_second,
                 attack_ids,
                 attack_inds,
                 target_ids,
@@ -1573,6 +1586,7 @@ class BYTETracker(object):
         target_ids = []
         attack_inds = []
         target_inds = []
+        
         if len(dets_) > 0:
             ious = bbox_ious(np.ascontiguousarray(dets_[:, :4], dtype=np.float64),
                              np.ascontiguousarray(dets_[:, :4], dtype=np.float64))
@@ -1655,7 +1669,6 @@ class BYTETracker(object):
                     adImg = cv2.imread(os.path.join(self.args.img_dir, img_info[-1][0]))
         if noise is not None:
             l2_dis = (noise ** 2).sum().sqrt().item()
-
             imgs = (imgs + noise)
             imgs[0, 0] = torch.clip(imgs[0, 0], min=-0.485 / 0.229, max=(1 - 0.485) / 0.229)
             imgs[0, 1] = torch.clip(imgs[0, 1], min=-0.456 / 0.224, max=(1 - 0.456) / 0.224)
@@ -1671,6 +1684,25 @@ class BYTETracker(object):
             l2_dis = None
             adImg = imgs
         output_stracks_att = self.update(imgs, img_info, img_size, [], ids, track_id=None)
+        output_stracks_att_ind = []
+        for ind, track in enumerate(output_stracks_att):
+            if track.track_id not in self.multiple_att_ids:
+                self.multiple_att_ids[track.track_id] = 0
+            self.multiple_att_ids[track.track_id] += 1
+            if self.multiple_att_ids[track.track_id] <= self.FRAME_THR:
+                output_stracks_att_ind.append(ind)
+        if len(output_stracks_ori_ind) and len(output_stracks_att_ind):
+            ori_dets = [track.curr_tlbr for i, track in enumerate(output_stracks_ori) if i in output_stracks_ori_ind]
+            att_dets = [track.curr_tlbr for i, track in enumerate(output_stracks_att) if i in output_stracks_att_ind]
+            ori_dets = np.stack(ori_dets).astype(np.float64)
+            att_dets = np.stack(att_dets).astype(np.float64)
+            ious = bbox_ious(ori_dets, att_dets)
+            row_ind, col_ind = linear_sum_assignment(-ious)
+            for i in range(len(row_ind)):
+                if ious[row_ind[i], col_ind[i]] > 0.9:
+                    ori_id = output_stracks_ori[output_stracks_ori_ind[row_ind[i]]].track_id
+                    att_id = output_stracks_att[output_stracks_att_ind[col_ind[i]]].track_id
+                    self.multiple_ori2att[ori_id] = att_id
         
         return output_stracks_ori,output_stracks_att, adImg, noise, l2_dis
 
