@@ -450,7 +450,7 @@ class BYTETracker(object):
 
 
                 attack_det_center_max = attack_det_center_maxs[ind_l]
-                target_det_center_max = attack_det_center_maxs[ind_l]
+                target_det_center_max = target_det_center_maxs[ind_l]
 
                 attack_i = None
                 target_i = None
@@ -588,7 +588,7 @@ class BYTETracker(object):
                     outputs_wh = outputs[:, 2:4][n_att_index_lst] - outputs[:, :2][n_att_index_lst]
                     loss_wh += -smoothL1(outputs_wh, reg_wh[n_ori_index_lst])
 
-                loss += loss_att + loss_ori + loss_wh * 0.1
+                loss =loss+loss_att + loss_ori + loss_wh * 0.1
             if isinstance(loss, float):
                 suc = False
                 break
