@@ -310,7 +310,7 @@ class MOTEvaluator:
                 video_names[video_id] = video_name
             if frame_id == 1:
                 vdos += 1
-                if last_vdo and self.args.attack == 'single' and self.args.attack_id == -1:
+                if last_vdo and self.args.attack == 'single' and self.args.attack_id == -1 and self.args.method in ['ids', 'dets', 'feat', 'cl', 'hijack']:
                     output_file = os.path.join(self.args.output_dir, f'{last_vdo}_attack_result.txt')
                     file = open(output_file, 'w')
                     out_logger = Logger(file)
@@ -412,7 +412,7 @@ class MOTEvaluator:
             # run tracking
             # img0 = cv2.imread(os.path.join(self.args.img_dir, info_imgs[-1][0]))
             if self.args.attack:
-                if self.args.attack == 'single' and self.args.attack_id == -1:
+                if self.args.attack == 'single' and self.args.attack_id == -1 and self.args.method in ['ids', 'dets', 'feat', 'cl', 'hijack']:
                     online_targets = tracker.update(imgs, info_imgs, self.img_size, data_list, ids, track_id=track_id)
                     dets = []
                     ids_single = []
@@ -475,19 +475,42 @@ class MOTEvaluator:
                                 'origin': {'track_id': track_id['track_id']},
                                 'attack': {'track_id': track_id['track_id']}
                             }
-                        output_stracks_att, adImg, noise, l2_dis, suc = trackers_dic[attack_id].update_attack_sg(
-                            imgs,
-                            info_imgs,
-                            self.img_size,
-                            data_list,
-                            ids,
-                            attack_id=attack_id,
-                            track_id=sg_track_ids[attack_id]
-                        )
+                        if self.args.method == 'ids':
+                            output_stracks_att, adImg, noise, l2_dis, suc = trackers_dic[attack_id].update_attack_sg(
+                                imgs,
+                                info_imgs,
+                                self.img_size,
+                                data_list,
+                                ids,
+                                attack_id=attack_id,
+                                track_id=sg_track_ids[attack_id]
+                            )
+                        elif self.args.method == 'dets':
+                            output_stracks_att, adImg, noise, l2_dis, suc = trackers_dic[attack_id].update_attack_sg_det(
+                                imgs,
+                                info_imgs,
+                                self.img_size,
+                                data_list,
+                                ids,
+                                attack_id=attack_id,
+                                track_id=sg_track_ids[attack_id]
+                            )
+                        elif self.args.method == 'hijack':
+                            output_stracks_att, adImg, noise, l2_dis, suc = trackers_dic[attack_id].update_attack_sg_hj(
+                                imgs,
+                                info_imgs,
+                                self.img_size,
+                                data_list,
+                                ids,
+                                attack_id=attack_id,
+                                track_id=sg_track_ids[attack_id]
+                            )
+
                         sg_track_outputs[attack_id] = {}
                         sg_track_outputs[attack_id]['output_stracks_att'] = output_stracks_att
                         sg_track_outputs[attack_id]['adImg'] = adImg
                         sg_track_outputs[attack_id]['noise'] = noise
+                        print(suc)
                         if suc in [1, 2]:
                             if attack_id not in sg_attack_frames:
                                 sg_attack_frames[attack_id] = 0
@@ -517,15 +540,15 @@ class MOTEvaluator:
                     lost_stracks = copy.deepcopy(tracker.lost_stracks)
                     removed_stracks = copy.deepcopy(tracker.removed_stracks)
                     ad_last_info = copy.deepcopy(tracker.ad_last_info)
-                if self.args.attack == 'single':
+                elif self.args.attack == 'single' and self.args.method == "ids":
                     online_targets, adImg, noise, l2_dis, suc = tracker.update_attack_sg(imgs, info_imgs, self.img_size, data_list, ids, attack_id=self.args.attack_id)
-                if self.args.attack == "multiple":
+                elif self.args.attack == "multiple":
                     online_targets_ori,output_stracks_att, adImg, noise, l2_dis=tracker.update_attack_mt(imgs, info_imgs, self.img_size, data_list, ids, attack_id=None)
                     if l2_dis is not None:
                         l2_distance.append(l2_dis)
                         attack_frames += 1
                 
-                if self.args.attack == "multiple":
+                elif self.args.attack == "multiple":
                     online_tlwhs_att = []
                     online_ids_att = []
                     for t in output_stracks_att:
@@ -536,8 +559,8 @@ class MOTEvaluator:
                         if tlwh[2] * tlwh[3] > self.args.min_box_area and not vertical:
                             online_tlwhs_att.append(tlwh)
                             online_ids_att.append(tid)
-                    results_att.append((frame_id + 1, online_tlwhs_att, online_ids_att))
-                
+                    results_att.append((frame_id, online_tlwhs_att, online_ids_att))
+                #for frame_id, tlwhs, track_ids in results:
 
             else:
                 online_targets = tracker.update(imgs, info_imgs, self.img_size, data_list, ids)
@@ -554,7 +577,7 @@ class MOTEvaluator:
                         online_ids.append(tid)
                     # if t.exist_len > 10:
                     #     all_effective_ids.add(t.track_id)
-                results.append((frame_id + 1, online_tlwhs, online_ids))
+                results.append((frame_id, online_tlwhs, online_ids))
             
                 
 
@@ -647,10 +670,11 @@ class MOTEvaluator:
             out_logger(
                 f'The accuracy is {round(100 * len(suc_attacked_ids) / len(need_attack_ids), 2) if len(need_attack_ids) else 0}%')
             out_logger(
+                f'The mean L2 distance: {dict(zip(suc_attacked_ids, [sum(l2_distance_sg[k]) / max(1e-8, len(l2_distance_sg[k])) for k in suc_attacked_ids])) if len(suc_attacked_ids) else None}')
+            out_logger(
                 f'The attacked frames: {sg_attack_frames}\tmin: {min(sg_attack_frames.values()) if len(need_attack_ids) else None}\t'
                 f'max: {max(sg_attack_frames.values()) if len(need_attack_ids) else None}\tmean: {sum(sg_attack_frames.values()) / len(sg_attack_frames) if len(need_attack_ids) else None}')
-            out_logger(
-                f'The mean L2 distance: {dict(zip(suc_attacked_ids, [sum(l2_distance_sg[k]) / max(1e-8, len(l2_distance_sg[k])) for k in suc_attacked_ids])) if len(suc_attacked_ids) else None}')
+            
             file.close()
         elif last_vdo and self.args.attack == 'multiple':
             output_file = os.path.join(self.args.output_dir, f'{last_vdo}_attack_result.txt')
